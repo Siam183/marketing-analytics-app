@@ -1,128 +1,83 @@
 import streamlit as st
 import joblib
 import pandas as pd
+import numpy as np
 
-# --- PAGE CONFIG ---
-st.set_page_config(
-    page_title="Marketing Analytics Dashboard",
-    page_icon="📈",
-    layout="wide"
-)
+st.set_page_config(page_title="AI Marketing Intelligence", layout="wide")
 
-# --- CUSTOM STYLING ---
-st.markdown("""
-    <style>
-    .main {
-        background-color: #f8f9fa;
-    }
-    .stMetric {
-        background-color: #ffffff;
-        padding: 20px;
-        border-radius: 10px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-    }
-    .sidebar .sidebar-content {
-        background-color: #ffffff;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-
-# --- LOAD ASSETS ---
 @st.cache_resource
-def load_assets():
-    try:
-        data = joblib.load('marketing_lookup_model.pkl')
-        return data
-    except FileNotFoundError:
-        st.error("⚠️ Model file 'marketing_lookup_model.pkl' not found. Please ensure it is in the same folder as this script.")
-        return None
+def load_all():
+    return joblib.load('marketing_hybrid_model.pkl')
 
-data = load_assets()
+assets = load_all()
+lookup = assets['lookup_table']
+ml_model = assets['ml_model']
+encoders = assets['label_encoders']
+raw_df = assets['df']
 
-if data:
-    lookup = data['lookup_table']
-    global_stats = data['global_stats']
-    options = data['options']
+st.title("🎯 Hybrid Marketing Forecaster")
+st.markdown("This tool combines **Historical Averages** with **Machine Learning Predictions**.")
 
-    # --- SIDEBAR / INPUT SECTION ---
-    st.title("📈 Marketing Campaign Performance Analyzer")
-    st.markdown("Select campaign parameters to view historical performance metrics based on 200,000 records.")
-    st.divider()
-
-    with st.container():
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            st.subheader("🏢 Corporate Context")
-            company = st.selectbox("Company", options['Company'])
-            location = st.selectbox("Geographic Location", options['Location'])
-            language = st.selectbox("Target Language", options['Language'])
-
-        with col2:
-            st.subheader("🎯 Strategy")
-            campaign_type = st.selectbox("Campaign Type", options['Campaign_Type'])
-            target_audience = st.selectbox("Target Audience", options['Target_Audience'])
-            segment = st.selectbox("Customer Segment", options['Customer_Segment'])
-
-        with col3:
-            st.subheader("📺 Distribution")
-            channel = st.selectbox("Marketing Channel", options['Channel_Used'])
-            st.info("The duration is currently calculated as a historical average for these categories.")
-
-    st.markdown("###") # Vertical spacer
+# --- DYNAMIC UI LOGIC ---
+with st.sidebar:
+    st.header("Campaign Filters")
     
-    # --- ACTION BUTTON ---
-    if st.button("🚀 Analyze Performance", type="primary", use_container_width=True):
-        
-        # Filtering logic
-        match = lookup[
-            (lookup['Company'] == company) &
-            (lookup['Campaign_Type'] == campaign_type) &
-            (lookup['Target_Audience'] == target_audience) &
-            (lookup['Channel_Used'] == channel) &
-            (lookup['Location'] == location) &
-            (lookup['Language'] == language) &
-            (lookup['Customer_Segment'] == segment)
-        ]
+    # 1. Company
+    comp = st.selectbox("Company", sorted(raw_df['Company'].unique()))
+    
+    # 2. Filter locations based on Company
+    loc_options = sorted(raw_df[raw_df['Company'] == comp]['Location'].unique())
+    loc = st.selectbox("Location", loc_options)
+    
+    # 3. Filter Channels based on Company + Location
+    chan_options = sorted(raw_df[(raw_df['Company'] == comp) & (raw_df['Location'] == loc)]['Channel_Used'].unique())
+    chan = st.selectbox("Channel", chan_options)
+    
+    # 4. Filter others (Remaining inputs)
+    aud = st.selectbox("Target Audience", sorted(raw_df['Target_Audience'].unique()))
+    ctype = st.selectbox("Campaign Type", sorted(raw_df['Campaign_Type'].unique()))
+    lang = st.selectbox("Language", sorted(raw_df['Language'].unique()))
+    seg = st.selectbox("Customer Segment", sorted(raw_df['Customer_Segment'].unique()))
 
-        st.markdown("---")
-        
+# --- CALCULATION ---
+if st.button("Generate Intelligence Report", type="primary"):
+    
+    # 1. Look for Historical Match
+    match = lookup[
+        (lookup['Company'] == comp) & (lookup['Location'] == loc) & 
+        (lookup['Channel_Used'] == chan) & (lookup['Target_Audience'] == aud) &
+        (lookup['Campaign_Type'] == ctype) & (lookup['Language'] == lang) &
+        (lookup['Customer_Segment'] == seg)
+    ]
+
+    # 2. Generate ML Prediction (Always)
+    input_data = pd.DataFrame([{
+        'Company': comp, 'Campaign_Type': ctype, 'Target_Audience': aud,
+        'Duration': 30, 'Channel_Used': chan, 'Location': loc,
+        'Language': lang, 'Customer_Segment': seg
+    }])
+    
+    # Encode for ML
+    for col, le in encoders.items():
+        input_data[col] = le.transform(input_data[col])
+    
+    ml_pred = ml_model.predict(input_data)[0]
+
+    # --- DISPLAY ---
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.subheader("📊 Historical Data (Actuals)")
         if not match.empty:
             res = match.iloc[0]
-            
-            # Display Metrics
-            m1, m2, m3 = st.columns(3)
-            
-            with m1:
-                st.metric(
-                    label="Avg. Conversion Rate", 
-                    value=f"{res['Conversion_Rate']*100:.2f}%",
-                    help="The percentage of visitors who completed the desired action."
-                )
-            with m2:
-                st.metric(
-                    label="Avg. Acquisition Cost", 
-                    value=f"${res['Acquisition_Cost']:,.2f}",
-                    help="The average cost to acquire one customer in this segment."
-                )
-            with m3:
-                st.metric(
-                    label="Average ROI", 
-                    value=f"{res['ROI']:.2f}x",
-                    help="Return on Investment (Multiple of spend)."
-                )
-            
-            st.success("✅ Results generated from exact historical matches.")
-            
+            st.metric("Avg ROI", f"{res['ROI']:.2f}x")
+            st.metric("Avg Conv. Rate", f"{res['Conversion_Rate']*100:.2f}%")
         else:
-            # Fallback to Global Stats
-            st.warning("📡 No exact historical match found for this unique combination. Showing Global Averages as a baseline:")
-            
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Global Conversion", f"{global_stats['Conversion_Rate']*100:.2f}%")
-            m2.metric("Global Avg. Cost", f"${global_stats['Acquisition_Cost']:,.2f}")
-            m3.metric("Global Avg. ROI", f"{global_stats['ROI']:.2f}x")
+            st.warning("No exact historical match found for this specific path.")
 
-# --- FOOTER ---
-st.markdown("---")
-st.caption("Marketing Data Engine v1.0 | Built with Python & Streamlit")
+    with col2:
+        st.subheader("🤖 AI Prediction (XGBoost)")
+        st.metric("Predicted ROI", f"{ml_pred[2]:.2f}x", delta=f"{(ml_pred[2]-lookup['ROI'].mean()):.2f} vs Avg")
+        st.metric("Predicted Conv. Rate", f"{ml_pred[0]*100:.2f}%")
+
+    st.success("Analysis Complete. The AI model accounts for patterns even where historical data is missing.")
